@@ -95,12 +95,55 @@ def gain_inl(x: list, y: list, item='', returnDNL=False):
     i1 = -1
 
     posINL = np.where(inl > 0.01)[0]
+    # Entire range if no inl>1%
     if len(posINL)==0:
-        i1 = -1
+        i0,i1 = 0,-1 
+    elif posINL[0]==0:
+        if len(posINL)==1:
+            # If first point is only inl>1%, go backward until that (will be taken care of by absolute value later)
+            i0=posINL[0]
+            i1=-1
+        else:
+            #Look through and see if there is any region of inl<0.01 in the middle that is greater than the range between the last inl point and 
+            #the end of the data
+            max_diff=0
+            point1,point2 = None,None
+            for i in range(len(posINL)-1):  
+                diff=abs(posINL[i]-posINL[i+1])
+                if diff>max_diff:
+                    max_diff=diff
+                    point1,point2=posINL[i],posINL[i+1]
+
+            last_point=posINL[-1]
+            distance_from = abs(last_point-len(inl))  
+            if distance_from > max_diff:
+                #If last inl point to end of data is biggest linear range
+                i0=last_point
+                i1=-1
+            elif distance_from<=max_diff:
+                #If range in middle is biggest linear range
+                i0=point1
+                i1=point2
     else:
-        i1 = posINL[0]
-        if i1==0:
-            i0 = -1
+            max_diff=0
+            point1,point2 = None,None
+            for i in range(len(posINL)-1):  
+                diff=abs(posINL[i]-posINL[i+1])
+                if diff>max_diff:
+                    max_diff=diff
+                    point1,point2=posINL[i],posINL[i+1]
+
+            first_point=posINL[0]
+            distance_from = abs(first_point)  
+            if distance_from > max_diff:
+                #If first inl point to beginning of data is biggest linear range
+                i0=last_point
+                i1=-1
+            elif distance_from<=max_diff:
+                #If range in middle is biggest linear range
+                i0=point1
+                i1=point2
+    print("I's:", i0, i1)
     
     peakinl = np.max(inl)
     linRange = [y[i0], y[i1]]
