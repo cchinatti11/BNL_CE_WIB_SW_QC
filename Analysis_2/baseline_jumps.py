@@ -384,31 +384,29 @@ import pickle
 import numpy as np
 import matplotlib.pyplot as plt
 from scipy.signal import butter, filtfilt, find_peaks, peak_prominences
+import csv
 
-folder_path = "/Users/carolynchinatti/desktop/rms_8910"
+root_folder = "/data/rts/RTS_DAT_LArASIC_QC"
 n_sockets = 8
 n_channels = 16
-window = 50
+window = 75
 max_jump_gap = 3000
-fs = 1e9 / 512
+fs = 1e9/512
 hp_cutoff = 3e3
 filter_order = 4
 
-b, a = butter(filter_order, hp_cutoff / (fs / 2), btype='highpass')
+b, a = butter(filter_order, hp_cutoff/(fs/2), btype='highpass')
 
-configs_to_check = {
-    "first":  'RMS_SLK_SDD0_SDF0_SLK00_SLK11_SNC0_ST01_ST11_SG00_SG10',
+configs_to_check = {"first":  'RMS_SLK_SDD0_SDF0_SLK00_SLK11_SNC0_ST01_ST11_SG00_SG10',
     "second": 'RMS_SLK_SDD0_SDF0_SLK01_SLK11_SNC0_ST01_ST11_SG00_SG10',
     "third":  'RMS_SLK_SDD0_SDF0_SLK00_SLK10_SNC0_ST01_ST11_SG00_SG10',
-    "fourth": 'RMS_SLK_SDD0_SDF0_SLK01_SLK10_SNC0_ST01_ST11_SG00_SG10'
-}
+    "fourth": 'RMS_SLK_SDD0_SDF0_SLK01_SLK10_SNC0_ST01_ST11_SG00_SG10'}
 
-def is_bimodal(buffer, bins=30, prominence=0.005, min_peak_separation=0.1, valley_fraction=0.5, show_hist=False):
-    """Return True if histogram has 2+ peaks clearly separated by min_peak_separation."""
-    counts, bin_edges = np.histogram(buffer, bins=bins)
-    bin_centers = 0.5 * (bin_edges[:-1] + bin_edges[1:])
-    peaks, _ = find_peaks(counts, prominence=prominence * np.max(counts))
-    if len(peaks) < 2:
+def is_bimodal(buffer, bins=30, prominence=0.005, min_peak_separation=0.1, valley_fraction=0.5):
+    counts, bin_edges=np.histogram(buffer, bins=bins)
+    bin_centers=0.5*(bin_edges[:-1]+bin_edges[1:])
+    peaks, _=find_peaks(counts, prominence=prominence * np.max(counts))
+    if len(peaks)<2:
         return False
 
     peak_heights = counts[peaks]
@@ -416,149 +414,177 @@ def is_bimodal(buffer, bins=30, prominence=0.005, min_peak_separation=0.1, valle
     primary_idx = np.argmax(peak_heights)
     primary_peak = peaks[primary_idx]
     primary_value = bin_centers[primary_peak]
-    amplitude_range = np.max(buffer) - np.min(buffer)
-    min_sep = amplitude_range * min_peak_separation
+    amplitude_range = np.max(buffer)-np.min(buffer)
+    min_sep = amplitude_range*min_peak_separation
 
     for i, pk in enumerate(peaks):
         if i == primary_idx:
             continue
-        separation = abs(bin_centers[pk] - primary_value)
+        separation = abs(bin_centers[pk]-primary_value)
         prom_ok = prominences[i] >= prominence * np.max(counts)
-        # Check valley between peaks
         left_idx, right_idx = sorted([primary_peak, pk])
-        valley_height = np.min(counts[left_idx:right_idx+1])
+        valley_height = np.min(counts[left_idx:right_idx + 1])
         valley_ok = valley_height <= counts[pk] * valley_fraction
         if separation >= min_sep and prom_ok and valley_ok:
             return True
     return False
 
-total_waveforms = 0
-
-for filename in os.listdir(folder_path):
-    if not filename.endswith(".bin"):
+for top_folder in sorted(os.listdir(root_folder)):
+    top_path = os.path.join(root_folder, top_folder)
+    if not os.path.isdir(top_path):
         continue
 
-    print(f"\nProcessing: {filename}")
-    file_path = os.path.join(folder_path, filename)
+    print(f"Processing top folder: {top_folder}")
+    grading_results = []
+    total_waveforms = 0
 
-    with open(file_path, "rb") as f:
-        rms_data = pickle.load(f)
+    for time_folder in sorted(os.listdir(top_path)):
+        time_path = os.path.join(top_path, time_folder)
+        if not os.path.isdir(time_path) or not time_folder.startswith("Time_"):
+            continue
 
-    for socket_index in range(8):
-        for channel_index in range(16):
-            jumps_in_configs = {cfg: False for cfg in configs_to_check}
-            raw_signals={}
-            hp_signals={}
-            spy_buffer_lengths_per_cfg = {}
+        for ln_folder in sorted(os.listdir(time_path)):
+            ln_path = os.path.join(time_path, ln_folder)
+            if not os.path.isdir(ln_path) or not ln_folder.startswith("LN_"):
+                continue
 
-            plot_waveform = False
+            print(f"\Processing LN folder: {ln_path}")
 
-            for cfg_name, cfg_key in configs_to_check.items():
-                if cfg_key not in rms_data:
+            for filename in sorted(os.listdir(ln_path)):
+                if not filename.endswith(".bin") or "RMS" not in filename:
                     continue
 
-                fembs = rms_data[cfg_key][0]
-                raw_data = rms_data[cfg_key][1]
-                data_dec, spy_buffer_lengths = decodeRawData(fembs=fembs, rawdata=raw_data)
-                raw_signal = np.array(data_dec[socket_index][channel_index])
-                if len(raw_signal) == 0:
-                    continue
-                hp_signal = filtfilt(b, a, raw_signal)
+                file_path = os.path.join(ln_path, filename)
+                with open(file_path, "rb") as f:
+                    rms_data = pickle.load(f)
 
-                raw_signals[cfg_name] = raw_signal
-                hp_signals[cfg_name] = hp_signal
-                spy_buffer_lengths_per_cfg[cfg_name] = spy_buffer_lengths
+                for socket_index in range(n_sockets):
+                    for channel_index in range(n_channels):
+                        jumps_in_configs = {cfg: False for cfg in configs_to_check}
+                        paired_jump_counts = {cfg: 0 for cfg in configs_to_check}
+                        raw_signals={}
+                        hp_signals={}
+                        spy_buffer_lengths_per_cfg={}
+                        plot_waveform = False
 
-                start = 0
-                for length in spy_buffer_lengths:
-                    end = start+length
-                    if end>len(raw_signal):
-                        end = len(raw_signal)
-                    buffer_raw = raw_signal[start:end]
-                    buffer_hp = hp_signal[start:end]
-                    if len(buffer_hp)<2*window:
-                        start = end
-                        continue
+                        for cfg_name, cfg_key in configs_to_check.items():
+                            if cfg_key not in rms_data:
+                                continue
 
-                    mini, maxi = np.min(buffer_hp), np.max(buffer_hp)
-                    spread = maxi - mini
-                    jump_threshold = spread*0.4
-                    candidates = []
-                    for j in range(window, len(buffer_hp) - window):
-                        mean_left = np.mean(buffer_hp[j - window:j])
-                        mean_right = np.mean(buffer_hp[j:j + window])
-                        diff = mean_right - mean_left
-                        if abs(diff) >= jump_threshold:
-                            candidates.append((j, np.sign(diff)))
+                            fembs = rms_data[cfg_key][0]
+                            raw_data = rms_data[cfg_key][1]
+                            data_dec, spy_buffer_lengths = decodeRawData(fembs=fembs, rawdata=raw_data)
+                            raw_signal = np.array(data_dec[socket_index][channel_index])
+                            if len(raw_signal) == 0:
+                                continue
 
-                    paired_jumps = []
-                    i = 0
-                    while i<len(candidates)-1:
-                        idx1, dir1 = candidates[i]
-                        idx2, dir2 = candidates[i+1]
-                        if dir2 == -dir1 and (idx2-idx1) <= max_jump_gap:
-                            paired_jumps.append((idx1, idx2))
-                            i += 2
+                            hp_signal = filtfilt(b, a, raw_signal)
+                            raw_signals[cfg_name] = raw_signal
+                            hp_signals[cfg_name] = hp_signal
+                            spy_buffer_lengths_per_cfg[cfg_name] = spy_buffer_lengths
+
+                            start = 0
+                            for length in spy_buffer_lengths:
+                                end = start+length
+                                if end>len(raw_signal):
+                                    end=len(raw_signal)
+                                buffer_raw=raw_signal[start:end]
+                                buffer_hp=hp_signal[start:end]
+                                if len(buffer_hp)<2*window:
+                                    start=end
+                                    continue
+
+                                mini, maxi = np.min(buffer_hp), np.max(buffer_hp)
+                                spread = maxi-mini
+                                jump_threshold = spread*0.4
+                                candidates = []
+                                for j in range(window, len(buffer_hp)-window):
+                                    mean_left = np.mean(buffer_hp[j-window:j])
+                                    mean_right = np.mean(buffer_hp[j:j+window])
+                                    diff = mean_right-mean_left
+                                    if abs(diff) >= jump_threshold:
+                                        candidates.append((j, np.sign(diff)))
+
+                                paired_jumps = []
+                                i = 0
+                                while i<len(candidates)-1:
+                                    idx1, dir1 = candidates[i]
+                                    idx2, dir2 = candidates[i+1]
+                                    if dir2 == -dir1 and (idx2-idx1) <= max_jump_gap:
+                                        paired_jumps.append((idx1, idx2))
+                                        i+=2
+                                    else:
+                                        i+=1
+
+                                if paired_jumps:
+                                    paired_jump_counts[cfg_name] += len(paired_jumps)
+                                    if is_bimodal(buffer_raw):
+                                        jumps_in_configs[cfg_name] = True
+                                        plot_waveform = True
+
+                                start = end
+
+                        f, s, t, fo = paired_jump_counts["first"], paired_jump_counts["second"], paired_jump_counts["third"], paired_jump_counts["fourth"]
+                        if not (s >= t >= fo):
+                            jumps_in_configs = {cfg: False for cfg in jumps_in_configs}
+
+                        grade = "A"
+                        has_jumps = any(jumps_in_configs.values())
+                        if not has_jumps:
+                            grade = "A"
+                        elif jumps_in_configs["fourth"]:
+                            grade = "D"
+                        elif jumps_in_configs["third"]:
+                            grade = "C"
+                        elif jumps_in_configs["first"] or jumps_in_configs["second"]:
+                            grade = "B"
                         else:
-                            i += 1
+                            grade = "A" 
 
-                    if paired_jumps:
-                        if is_bimodal(buffer_raw):
-                            jumps_in_configs[cfg_name] = True
-                            plot_waveform = True
+                        grading_results.append([ln_path, socket_index, channel_index, grade])
+                        total_waveforms=total_waveforms+1
 
-                    start = end
+                        if grade != "A":
+                            fig, axes = plt.subplots(4, 2, figsize=(14,12))
+                            fig.suptitle(f"{filename} | Sock {socket_index}, Ch {channel_index} | Grade {grade}", fontsize=14)
 
-            grade="A"
-            if jumps_in_configs["first"]:
-                grade="D"
-            elif jumps_in_configs["second"]:
-                grade="C"
-            elif jumps_in_configs["third"] or jumps_in_configs["fourth"]:
-                grade="B"
+                            for row_idx, cfg_name in enumerate(configs_to_check):
+                                if cfg_name not in raw_signals:
+                                    axes[row_idx, 0].set_title(f"{cfg_name} (missing)")
+                                    axes[row_idx, 1].axis("off")
+                                    continue
 
-            print(f'socket {socket_index} channel {channel_index} grade {grade}')
+                                raw_sig = raw_signals[cfg_name]
+                                hp_sig = hp_signals[cfg_name]
 
-            #OPTIONAL Plot all four configs if any one has baseline jumps
-            if plot_waveform:
-                fig, axes = plt.subplots(4, 2, figsize=(14, 12))
-                fig.suptitle(f"{filename} | Sock {socket_index}, Ch {channel_index} | Grade {grade}", fontsize=14)
-            
-                for row_idx, (cfg_name, cfg_key) in enumerate(configs_to_check.items()):
-                    if cfg_name not in raw_signals:
-                        axes[row_idx, 0].set_title(f"{cfg_name} (missing)")
-                        axes[row_idx, 1].axis("off")
-                        continue
-            
-                    raw_sig = raw_signals[cfg_name]
-                    hp_sig = hp_signals[cfg_name]
-                    spy_buffer_lengths = spy_buffer_lengths_per_cfg[cfg_name]
-                    colors = plt.cm.viridis(np.linspace(0, 1, len(spy_buffer_lengths)))
-            
-                    start = 0
-                    for i, length in enumerate(spy_buffer_lengths):
-                        end = start+length
-                        axes[row_idx, 0].plot(range(start, end), raw_sig[start:end], color=colors[i], linewidth=0.8)
-                        start = end
-                    axes[row_idx, 0].set_title(f"{cfg_name} (Raw)")
-                    axes[row_idx, 0].grid(alpha=0.3)
-            
-                    start = 0
-                    for i, length in enumerate(spy_buffer_lengths):
-                        end = start + length
-                        axes[row_idx, 1].plot(range(start, end), hp_sig[start:end], color=colors[i], linewidth=0.8)
-                        start = end
-                    axes[row_idx, 1].set_title(f"{cfg_name} (High-pass)")
-                    axes[row_idx, 1].grid(alpha=0.3)
-            
-                for ax in axes.flatten():
-                    ax.set_xlabel("Sample index")
-                    ax.set_ylabel("ADC counts")
-            
-                plt.tight_layout(rect=[0, 0, 1, 0.95])
-                plt.show()
-            
-            total_waveforms+=1
+                                axes[row_idx, 0].plot(raw_sig, color='blue', linewidth=0.8)
+                                axes[row_idx, 0].set_title(f"{cfg_name} (Raw)")
+                                axes[row_idx, 0].grid(alpha=0.3)
 
-print("\n=== SUMMARY ===")
-print(f"Total waveforms analyzed: {total_waveforms}")
+                                axes[row_idx, 1].plot(hp_sig, color='green', linewidth=0.8)
+                                axes[row_idx, 1].set_title(f"{cfg_name} (High-pass)")
+                                axes[row_idx, 1].grid(alpha=0.3)
+
+                            for ax in axes.flatten():
+                                ax.set_xlabel("Sample index")
+                                ax.set_ylabel("ADC counts")
+
+                            plt.tight_layout(rect=[0, 0, 1, 0.95])
+                            plt.show()
+
+    csv_path = f"/home/cchinatti/long_heir_grading_{top_folder}.csv"
+    with open(csv_path, 'w', newline='') as f:
+        writer = csv.writer(f)
+        writer.writerow(["ln_folder", "socket", "channel", "grade"])
+        writer.writerows(grading_results)
+
+    grade_counts = {"A": 0, "B": 0, "C": 0, "D": 0}
+    for _, _, _, grade in grading_results:
+        grade_counts[grade] = grade_counts.get(grade, 0)+1
+
+    print(f"{top_folder}: {total_waveforms} waveforms graded")
+    for grade, count in grade_counts.items():
+        pct = (count/total_waveforms*100) if total_waveforms > 0 else 0
+        print(f"   Grade {grade}: {count} ({pct:.1f}%)")
+
+    print(f"Results saved to CSV: {csv_path}")
